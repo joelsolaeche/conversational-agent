@@ -10,8 +10,4 @@ services:
       - key: OPENAI_MODEL
         value: gpt-4o-mini
       - key: DB_PATH
-        value: /data/memories.db
-    disk:
-      name: memory-store
-      mountPath: /data
-      sizeGB: 1
+        value: memories.db
