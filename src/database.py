@@ -11,6 +11,7 @@ A trigger keeps them in sync automatically whenever a new memory is inserted.
 import sqlite3
 import struct
 import math
+import secrets
 from datetime import datetime
 from typing import Optional
 
@@ -117,6 +118,15 @@ def init_db() -> None:
                 INSERT INTO memories_fts(rowid, content, category)
                 VALUES (new.id, new.content, new.category);
             END;
+
+            -- API keys table: maps a secret token to a user_id.
+            -- The token is a random 32-byte hex string (64 chars).
+            -- We store it as plain text here — in production you'd hash it.
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key        TEXT PRIMARY KEY,
+                user_id    TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
         """)
     conn.close()
 
@@ -288,3 +298,46 @@ def hybrid_search(
 
     memories.sort(key=lambda x: x["hybrid_score"], reverse=True)
     return memories[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+def create_api_key(user_id: str) -> str:
+    """
+    Generate a new API key for a user_id and persist it.
+
+    Why secrets.token_hex?
+      It uses the OS's cryptographically secure random number generator.
+      A 32-byte (64 hex char) token has 256 bits of entropy —
+      practically impossible to brute-force.
+
+    Returns the raw key string (shown to the user once at registration).
+    """
+    key = secrets.token_hex(32)
+    created_at = datetime.utcnow().isoformat()
+
+    conn = _get_connection()
+    with conn:
+        conn.execute(
+            "INSERT INTO api_keys (key, user_id, created_at) VALUES (?, ?, ?)",
+            (key, user_id, created_at),
+        )
+    conn.close()
+    return key
+
+
+def validate_api_key(key: str) -> Optional[str]:
+    """
+    Look up an API key and return the associated user_id, or None if invalid.
+
+    This is called on every request — SQLite primary key lookup is O(log n),
+    fast enough for this scale.
+    """
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT user_id FROM api_keys WHERE key = ?", (key,)
+    ).fetchone()
+    conn.close()
+    return row["user_id"] if row else None

@@ -1,17 +1,20 @@
 """
-main.py — FastAPI HTTP API wrapping the conversational agent.
+main.py — FastAPI HTTP API with authentication.
 
-Three endpoints:
-  POST /chat        — send a message, get a response
-  POST /chat/reset  — clear a session's conversation history
-  GET  /health      — liveness check
+Endpoints:
+  POST /register    — create a user and receive an API key
+  POST /chat        — send a message (requires Bearer token)
+  POST /chat/reset  — clear a session (requires Bearer token)
+  GET  /health      — liveness check (public)
 """
 
 import uuid
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 
 from src.agent import chat, reset_session
+from src.auth import require_api_key
+from src.database import create_api_key
 
 app = FastAPI(title="Conversational Agent with Memory")
 
@@ -19,13 +22,19 @@ app = FastAPI(title="Conversational Agent with Memory")
 # ---------------------------------------------------------------------------
 # Request / Response schemas
 # ---------------------------------------------------------------------------
-# Pydantic models validate incoming JSON automatically.
-# If a required field is missing, FastAPI returns a 422 before your code runs.
+
+class RegisterRequest(BaseModel):
+    user_id: str
+
+
+class RegisterResponse(BaseModel):
+    user_id: str
+    api_key: str
+
 
 class ChatRequest(BaseModel):
-    user_id: str
     message: str
-    session_id: str | None = None  # optional — generated if not provided
+    session_id: str | None = None  # user_id now comes from the API key, not the body
 
 
 class ChatResponse(BaseModel):
@@ -41,20 +50,36 @@ class ResetRequest(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/chat", response_model=ChatResponse)
-def chat_endpoint(req: ChatRequest):
+@app.post("/register", response_model=RegisterResponse)
+def register(req: RegisterRequest):
     """
-    Send a message to the agent and receive a response.
+    Create a new user and return their API key.
 
-    If no session_id is provided, one is generated from user_id + random uuid.
-    This means each call without a session_id starts a fresh conversation,
-    while calls with the same session_id continue the same thread.
+    The key is shown only once — if lost, the user must register again.
+    In production you'd add email verification, password hashing, etc.
     """
-    session_id = req.session_id or f"{req.user_id}-{uuid.uuid4().hex[:8]}"
+    try:
+        key = create_api_key(req.user_id)
+    except Exception as e:
+        # UNIQUE constraint on user_id will fail if already registered
+        raise HTTPException(status_code=400, detail=f"Could not register user: {e}")
+
+    return RegisterResponse(user_id=req.user_id, api_key=key)
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat_endpoint(req: ChatRequest, user_id: str = Depends(require_api_key)):
+    """
+    Send a message to the agent.
+
+    user_id is injected by the require_api_key dependency — the caller
+    cannot spoof it. This enforces strict memory isolation between users.
+    """
+    session_id = req.session_id or f"{user_id}-{uuid.uuid4().hex[:8]}"
 
     try:
         response = chat(
-            user_id=req.user_id,
+            user_id=user_id,
             user_message=req.message,
             session_id=session_id,
         )
@@ -65,11 +90,7 @@ def chat_endpoint(req: ChatRequest):
 
 
 @app.post("/chat/reset")
-def reset_endpoint(req: ResetRequest):
-    """
-    Clear a session's in-memory conversation history.
-    Long-term memories in SQLite are NOT affected.
-    """
+def reset_endpoint(req: ResetRequest, user_id: str = Depends(require_api_key)):
     reset_session(req.session_id)
     return {"status": "ok", "session_id": req.session_id}
 
