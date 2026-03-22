@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: conversational-agent
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false          # you will set this manually in the Render dashboard
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: DB_PATH
+        value: /data/memories.db
+    disk:
+      name: memory-store
+      mountPath: /data
+      sizeGB: 1
