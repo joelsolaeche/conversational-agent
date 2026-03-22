@@ -16,7 +16,13 @@ from typing import Optional
 
 
 import os
+
 DB_PATH = os.environ.get("DB_PATH", "memories.db")
+
+# Ensure the parent directory exists (needed when using a mounted disk like /data)
+_db_dir = os.path.dirname(DB_PATH)
+if _db_dir:
+    os.makedirs(_db_dir, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
